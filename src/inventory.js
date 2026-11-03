@@ -133,6 +133,70 @@ const SOURCE_CALL_PATTERNS = [
 // One content source importing another: `import { x } from './product-api'`.
 const SOURCE_IMPORT = /from\s+['"]\.\.?\/([\w.-]+)['"]/g;
 
+const IMPORT_PATTERNS = [
+  // import x from '...', import type { X } from '...', export * from '...'.
+  /\b(?:import|export)\s[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]/g,
+  // import '...' for side effects.
+  /\bimport\s*['"]([^'"]+)['"]/g,
+  // import('...') and require('...').
+  /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+];
+
+const readJson = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Import prefixes that point into the theme: `~/` (the bundle root in Fusion) plus wildcard
+ * `paths` from tsconfig.json or jsconfig.json, e.g. `"@components/*": ["./components/*"]`.
+ */
+const readAliases = (projectDir) => {
+  const aliases = new Map([['~/', projectDir]]);
+  for (const name of ['tsconfig.json', 'jsconfig.json']) {
+    const options = readJson(path.join(projectDir, name))?.compilerOptions;
+    const base = path.resolve(projectDir, options?.baseUrl ?? '.');
+    for (const [pattern, [target] = []] of Object.entries(options?.paths ?? {})) {
+      if (!pattern.endsWith('/*') || !target?.endsWith('/*')) continue;
+      aliases.set(pattern.slice(0, -1), path.resolve(base, target.slice(0, -1)));
+    }
+  }
+  return aliases;
+};
+
+/** Every import between theme files, as `{ from, to }` absolute paths (`to` has no extension resolved). */
+export const findImports = (files, projectDir) => {
+  const aliases = readAliases(projectDir);
+  const resolve = (spec, from) => {
+    if (spec.startsWith('.')) return path.resolve(path.dirname(from), spec);
+    for (const [prefix, dir] of aliases) if (spec.startsWith(prefix)) return path.join(dir, spec.slice(prefix.length));
+    return null;
+  };
+  const imports = [];
+  for (const from of files) {
+    const text = fs.readFileSync(from, 'utf8');
+    for (const pattern of IMPORT_PATTERNS) {
+      for (const match of text.matchAll(pattern)) {
+        const to = resolve(match[1], from);
+        if (to) imports.push({ from, to });
+      }
+    }
+  }
+  return imports;
+};
+
+/**
+ * Files that belong to a component: its folder (with `_children`), or for `<ns>/default.tsx`
+ * the namespace folder its helpers sit in, or just the file for `<ns>/<name>.tsx`.
+ */
+export const componentScope = (file, outputTypes) => {
+  if (fs.statSync(file).isDirectory()) return file;
+  return outputTypes.has(stripExt(path.basename(file))) ? path.dirname(file) : file;
+};
+
 /** Content source names referenced from code, e.g. `useContent({ source: 'site-service-hierarchy' })`. */
 export const findSourceCalls = (files, { sourceFiles = new Map() } = {}) => {
   const calls = new Map();

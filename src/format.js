@@ -37,17 +37,19 @@ const formatLevels = (levels) =>
     : '';
 
 /**
- * A row is `{ kind?, id, levels?, detail? }`: the id stands out, the kind and the
- * file or page it points to stay quiet.
+ * A row is `{ kind?, id, levels?, detail?, note?, noteTone? }`: the id stands out, the kind and the
+ * file or page it points to stay quiet. A note goes on its own line under the id.
  */
-const formatRow = ({ kind, id, levels, detail }) => {
+const formatRow = ({ kind, id, levels, detail, note, noteTone = c.dim }) => {
   const kindText = kind ? c.dim(kind.padEnd(KIND_WIDTH)) : '';
-  return `  ${kindText}${c.bold(id)}  ${formatLevels(levels)}${detail ? c.dim(detail) : ''}`;
+  const line = `  ${kindText}${c.bold(id)}  ${formatLevels(levels)}${detail ? c.dim(detail) : ''}`;
+  return note ? `${line}\n  ${' '.repeat(kind ? KIND_WIDTH : 0)}${noteTone(note)}` : line;
 };
 
-export const printHeader = (lines) => {
+export const printHeader = (lines, warnings = []) => {
   console.log(c.bold('Arc blocks audit'));
   for (const [label, value] of lines) console.log(`${c.dim(`${label}:`)} ${value}`);
+  for (const text of warnings) console.log(c.yellow(`warning: ${text}`));
 };
 
 export const printSection = (title, tone, rows) => {
@@ -60,6 +62,9 @@ export const printSection = (title, tone, rows) => {
   const sorted = [...rows].sort((a, b) => `${a.kind ?? ''}${a.id}`.localeCompare(`${b.kind ?? ''}${b.id}`));
   for (const row of sorted) console.log(formatRow(row));
 };
+
+// A quiet line under a section.
+export const printNote = (text) => console.log(`  ${c.dim(text)}`);
 
 export const printSummary = (items) => {
   console.log(`\n${c.bold('Summary')}`);

@@ -15,6 +15,32 @@ const pickDatabase = async (client, requested) => {
   return candidates[0];
 };
 
+// Timestamps PageBuilder keeps (epoch ms): a rendering is created on every save of a page or template.
+const DATE_FIELDS = { page: ['unpublishedTimestamp'], template: ['unpublishedTimestamp'], rendering: ['creationDate', 'lastAutoSavedAt', 'lastLiveAt'] };
+
+const toTime = (value) => {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Date.parse(value);
+  return NaN;
+};
+
+// Latest change across pages, templates and renderings, or null when none carries a date.
+const readLastChange = async (db) => {
+  let last = -Infinity;
+  for (const [kind, fields] of Object.entries(DATE_FIELDS)) {
+    const projection = Object.fromEntries(fields.map((field) => [field, 1]));
+    for (const doc of await db.collection(kind).find({}, { projection }).toArray()) {
+      for (const field of fields) {
+        const time = toTime(doc[field]);
+        // Skip junk such as dates in the future.
+        if (time > last && time <= Date.now() + 86400000) last = time;
+      }
+    }
+  }
+  return Number.isFinite(last) && last > 0 ? new Date(last) : null;
+};
+
 // Collects every contentService value nested anywhere in a customFields/contentConfig tree.
 const collectContentServices = (value, found) => {
   if (!value || typeof value !== 'object') return;
@@ -124,6 +150,8 @@ export const readUsage = async ({ uri, db: requestedDb }) => {
     for (const item of stashed) {
       walkRendering({ layoutItems: [{ renderableItems: [item.layoutItem] }] }, LEVEL.STASHED, `stashed "${item.name}"`, usage);
     }
+
+    usage.lastChange = await readLastChange(db);
 
     return usage;
   } finally {
