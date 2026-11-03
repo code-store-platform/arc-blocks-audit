@@ -125,8 +125,8 @@ export const readStock = (wpmediaDir, stockPackages, outputTypes) => {
 };
 
 const SOURCE_CALL_PATTERNS = [
-  // useContent({ source: 'name' }), including `source: enabled ? 'name' : null`.
-  /\b(?:source|contentService)\s*:\s*[^,}\n]*?['"`]([\w.-]+)['"`]/g,
+  // useContent({ source: 'name' }), including `source: enabled ? 'name' : null`; getContent({ sourceName: 'name' }).
+  /\b(?:source|sourceName|contentService)\s*:\s*[^,}\n]*?['"`]([\w.-]+)['"`]/g,
   // fetch('/pf/api/v3/content/fetch/name')
   /\/content\/fetch\/([\w.-]+)/g,
 ];
@@ -195,6 +195,57 @@ export const findImports = (files, projectDir) => {
 export const componentScope = (file, outputTypes) => {
   if (fs.statSync(file).isDirectory()) return file;
   return outputTypes.has(stripExt(path.basename(file))) ? path.dirname(file) : file;
+};
+
+/** Theme files that import each `@wpmedia/<pkg>` from `packages`, the package itself or a subpath. */
+export const findPackageImports = (files, packages) => {
+  const importers = new Map();
+  for (const file of files) {
+    const text = fs.readFileSync(file, 'utf8');
+    for (const pattern of IMPORT_PATTERNS) {
+      for (const match of text.matchAll(pattern)) {
+        const name = match[1].match(/^@wpmedia\/[^/]+/)?.[0];
+        if (!name || !packages.has(name)) continue;
+        const list = importers.get(name) ?? new Set();
+        list.add(file);
+        importers.set(name, list);
+      }
+    }
+  }
+  return new Map([...importers].map(([name, list]) => [name, [...list]]));
+};
+
+// '...', "..." and `...`; a template literal is taken whole, with its ${} parts.
+const STRING_LITERAL = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g;
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Files where a source name is a whole word inside a string literal, e.g. a wrapper called as
+ * `fetchSource('authors-api')`. Not proof of a call, a hint that the name is built at runtime.
+ * The source's own file (or folder) and import paths such as `'~/utils/<name>'` are skipped.
+ */
+export const findNameMentions = (files, names, { sourceFiles = new Map() } = {}) => {
+  const mentions = new Map();
+  if (names.length === 0) return mentions;
+  const word = new RegExp(`(?<![\\w-])(${names.map(escapeRegExp).join('|')})(?![\\w-])`, 'g');
+  const isOwnFile = (name, file) => {
+    const own = sourceFiles.get(name);
+    return own && (file === own || file.startsWith(`${own}${path.sep}`));
+  };
+  for (const file of files) {
+    const text = IMPORT_PATTERNS.reduce((code, pattern) => code.replace(pattern, ''), fs.readFileSync(file, 'utf8'));
+    const found = new Set();
+    for (const [literal] of text.matchAll(STRING_LITERAL)) {
+      for (const [, name] of literal.matchAll(word)) found.add(name);
+    }
+    for (const name of found) {
+      if (isOwnFile(name, file)) continue;
+      const list = mentions.get(name) ?? [];
+      list.push(file);
+      mentions.set(name, list);
+    }
+  }
+  return mentions;
 };
 
 /** Content source names referenced from code, e.g. `useContent({ source: 'site-service-hierarchy' })`. */

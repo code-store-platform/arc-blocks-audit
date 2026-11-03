@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { componentScope, findImports, findSourceCalls, readProject, readStock } from './inventory.js';
-import { printHeader, printNote, printSection, printSummary, TONE } from './format.js';
+import { componentScope, findImports, findNameMentions, findPackageImports, findSourceCalls, readProject, readStock } from './inventory.js';
+import { HINT, printHeader, printNote, printSection, printSummary, TONE } from './format.js';
 import { LEVEL, readUsage } from './usage.js';
 
 // Tokens and phrases every Arc Themes bundle needs: nothing in PageBuilder points to them, but they must stay.
@@ -126,83 +126,9 @@ const main = async () => {
     ['stock blocks', wpmediaDir],
   ], warnings);
 
-  // 1. Theme components. An unused one that other theme code imports is a shared component, not a block.
-  const imports = findImports(project.codeFiles, projectDir);
-  const isInside = (file, dir) => file === dir || file.startsWith(`${dir}${path.sep}`);
-  const importersOf = (file) => {
-    const scope = componentScope(file, project.outputTypes);
-    const bare = path.extname(scope) ? scope.slice(0, -path.extname(scope).length) : scope;
-    const from = imports.filter((imp) => !isInside(imp.from, scope) && (isInside(imp.to, scope) || imp.to === bare));
-    return [...new Set(from.map((imp) => imp.from))];
-  };
-  const unusedNote = (file) => {
-    const importers = importersOf(file);
-    if (importers.length === 0) return { note: 'review: not added to pages yet, or not needed' };
-    const more = importers.length > 1 ? `, +${importers.length - 1} more` : '';
-    return {
-      note: `imported from code: not placed as a block, consider moving to components/ <- ${rel(projectDir, importers[0])}${more}`,
-      noteTone: TONE.info,
-    };
-  };
-  const unusedComponents = [];
-  const draftOnlyComponents = [];
-  for (const [kind, map, ids] of [
-    ['feature', usage.features, project.features],
-    ['chain', usage.chains, project.chains],
-    ['layout', usage.layouts, project.layouts],
-  ]) {
-    for (const [id, file] of ids) {
-      if (!isUsed(map, id)) unusedComponents.push({ kind, id, detail: rel(args.project, file), ...unusedNote(file) });
-      else if (!isLive(map, id)) {
-        draftOnlyComponents.push({ kind, id, levels: [...levelsOf(map, id)], detail: whereOf(map.items.get(id)) });
-      }
-    }
-  }
-  printSection('Theme components not used on any page or template', TONE.remove, unusedComponents);
-  printSection('Theme components used only in drafts, stage or stashed items', TONE.review, draftOnlyComponents);
-
-  // 2. Stock packages from blocks.json.
-  const unusedPackages = [];
-  for (const [name, pkg] of stock) {
-    if (ARC_THEMES_BASE.has(name)) continue;
-    if (pkg.missing) {
-      unusedPackages.push({ id: name, detail: 'not installed, cannot check' });
-      continue;
-    }
-    const hasCode = pkg.features.size + pkg.chains.size + pkg.layouts.size + pkg.sources.size > 0;
-    const sourceUsed = [...pkg.sources.keys()].some((id) => isUsed(usage.sources, id) || codeCalls.has(id));
-    if (!usedPackages.has(name) && !sourceUsed) {
-      const note = hasCode
-        ? `${pkg.features.size + pkg.chains.size + pkg.layouts.size} components, ${pkg.sources.size} sources`
-        : 'no components or sources: tokens, phrases or a shared library, check by hand';
-      unusedPackages.push({ id: name, detail: note });
-    }
-  }
-  printSection('blocks.json packages with nothing used', TONE.remove, unusedPackages);
-  const basePackages = project.stockPackages.filter((name) => ARC_THEMES_BASE.has(name));
-  if (basePackages.length) printNote(`Arc Themes base packages (required by the theme, keep): ${basePackages.join(', ')}`);
-
-  // 3. Content sources.
+  // 1. Referenced in PageBuilder but not found in code: broken, not a hint, so it goes first.
   const allSources = new Map([...project.sources].map(([id, file]) => [id, rel(args.project, file)]));
   for (const [name, pkg] of stock) for (const id of pkg.sources.keys()) if (!allSources.has(id)) allSources.set(id, name);
-  const unusedSources = [];
-  const deadCallerSources = [];
-  const codeOnlySources = [];
-  const describe = (f) => (f.startsWith(wpmediaDir) ? `@wpmedia/${path.relative(wpmediaDir, f)}` : rel(args.project, f));
-  for (const [id, origin] of allSources) {
-    if (isUsed(usage.sources, id)) continue;
-    const calls = [...new Set(codeCalls.get(id) ?? [])];
-    const more = calls.length > 2 ? `, +${calls.length - 2} more` : '';
-    const callers = `${origin} <- ${calls.slice(0, 2).map(describe).join(', ')}${more}`;
-    if (calls.length === 0) unusedSources.push({ id, detail: origin });
-    else if (calls.every(isInUnusedComponent)) deadCallerSources.push({ id, detail: callers });
-    else codeOnlySources.push({ id, detail: callers });
-  }
-  printSection('Content sources not used anywhere', TONE.remove, unusedSources);
-  printSection('Content sources called only from unused theme components', TONE.remove, deadCallerSources);
-  printSection('Content sources used only from code (keep, not set in PageBuilder)', TONE.info, codeOnlySources);
-
-  // 4. Referenced in PageBuilder but not found in code.
   const known = new Set([
     ...project.features.keys(), ...project.chains.keys(), ...project.layouts.keys(),
     ...[...stock.values()].flatMap((pkg) => [...pkg.features.keys(), ...pkg.chains.keys(), ...pkg.layouts.keys()]),
@@ -216,15 +142,109 @@ const main = async () => {
   for (const [id, entry] of usage.sources.items) {
     if (!allSources.has(id)) missing.push({ kind: 'source', id, levels: [...entry.levels], detail: whereOf(entry) });
   }
-  printSection('Referenced in PageBuilder but not found in code', TONE.error, missing);
+  printSection('Referenced in PageBuilder but not found in code', missing, { tone: TONE.error, loud: true });
 
+  // 2. Theme components. An unused one that other theme code imports is a shared component, not a block.
+  const imports = findImports(project.codeFiles, projectDir);
+  const isInside = (file, dir) => file === dir || file.startsWith(`${dir}${path.sep}`);
+  const importersOf = (file) => {
+    const scope = componentScope(file, project.outputTypes);
+    const bare = path.extname(scope) ? scope.slice(0, -path.extname(scope).length) : scope;
+    const from = imports.filter((imp) => !isInside(imp.from, scope) && (isInside(imp.to, scope) || imp.to === bare));
+    return [...new Set(from.map((imp) => imp.from))];
+  };
+  const unusedNote = (file) => {
+    const importers = importersOf(file);
+    if (importers.length === 0) return { hint: HINT.CANDIDATE, note: 'not imported either: not added to pages yet, or not needed' };
+    const more = importers.length > 1 ? `, +${importers.length - 1} more` : '';
+    return {
+      hint: HINT.CHECK,
+      note: `imported from code: not placed as a block, consider moving to components/ <- ${rel(projectDir, importers[0])}${more}`,
+    };
+  };
+  const unusedComponents = [];
+  const draftOnlyComponents = [];
+  for (const [kind, map, ids] of [
+    ['feature', usage.features, project.features],
+    ['chain', usage.chains, project.chains],
+    ['layout', usage.layouts, project.layouts],
+  ]) {
+    for (const [id, file] of ids) {
+      if (!isUsed(map, id)) unusedComponents.push({ kind, id, detail: rel(args.project, file), ...unusedNote(file) });
+      else if (!isLive(map, id)) {
+        draftOnlyComponents.push({ hint: HINT.CHECK, kind, id, levels: [...levelsOf(map, id)], detail: whereOf(map.items.get(id)) });
+      }
+    }
+  }
+  printSection('Theme components: not found on any page or template', unusedComponents);
+  printSection('Theme components: found only in drafts, stage or stashed items', draftOnlyComponents);
+
+  // A source name in a string literal elsewhere in the theme may be a call through a wrapper.
+  const mentions = findNameMentions(project.codeFiles, [...allSources.keys()], { sourceFiles: project.sources });
+  const mentionOf = (id) => {
+    const found = mentions.get(id) ?? [];
+    return found.length ? `${rel(projectDir, found[0])}${found.length > 1 ? `, +${found.length - 1}` : ''}` : null;
+  };
+
+  // 3. Stock packages from blocks.json. One the theme imports (a library such as hooks or utils)
+  // is in use even with no block on a page: it gets one quiet line, not a row.
+  const packageImports = findPackageImports(project.codeFiles, new Set(project.stockPackages));
+  const unusedPackages = [];
+  const importedPackages = [];
+  for (const [name, pkg] of stock) {
+    if (ARC_THEMES_BASE.has(name)) continue;
+    const sourceUsed = [...pkg.sources.keys()].some((id) => isUsed(usage.sources, id) || codeCalls.has(id));
+    if (usedPackages.has(name) || sourceUsed) continue;
+    const importers = packageImports.get(name) ?? [];
+    const hasCode = pkg.features.size + pkg.chains.size + pkg.layouts.size + pkg.sources.size > 0;
+    const detail = `${pkg.features.size + pkg.chains.size + pkg.layouts.size} components, ${pkg.sources.size} sources, not imported`;
+    const mentioned = [...pkg.sources.keys()].find(mentionOf);
+    if (importers.length) importedPackages.push(`${name} (${importers.length} files)`);
+    else if (pkg.missing) unusedPackages.push({ hint: HINT.CHECK, id: name, detail: 'not installed, cannot check' });
+    else if (!hasCode) {
+      unusedPackages.push({ hint: HINT.CHECK, id: name, detail: 'no components or sources and not imported: tokens or styles, check by hand' });
+    } else if (mentioned) {
+      unusedPackages.push({ hint: HINT.CHECK, id: name, detail, note: `source "${mentioned}" mentioned in code: ${mentionOf(mentioned)}` });
+    } else unusedPackages.push({ hint: HINT.CANDIDATE, id: name, detail });
+  }
+  printSection('blocks.json packages: no usage found', unusedPackages);
+  if (importedPackages.length) printNote(`imported by theme code (keep): ${importedPackages.join(', ')}`, HINT.INFO);
+  const basePackages = project.stockPackages.filter((name) => ARC_THEMES_BASE.has(name));
+  if (basePackages.length) printNote(`Arc Themes base packages (required by the theme, keep): ${basePackages.join(', ')}`, HINT.INFO);
+
+  // 4. Content sources. One whose name is only mentioned in code is a "check", not a candidate.
+  const unusedSources = [];
+  const deadCallerSources = [];
+  const codeOnlySources = [];
+  const describe = (f) => (f.startsWith(wpmediaDir) ? `@wpmedia/${path.relative(wpmediaDir, f)}` : rel(args.project, f));
+  for (const [id, origin] of allSources) {
+    if (isUsed(usage.sources, id)) continue;
+    const calls = [...new Set(codeCalls.get(id) ?? [])];
+    const more = calls.length > 2 ? `, +${calls.length - 2} more` : '';
+    const callers = `${origin} <- ${calls.slice(0, 2).map(describe).join(', ')}${more}`;
+    if (calls.length === 0) {
+      const mention = mentionOf(id);
+      if (!mention) unusedSources.push({ hint: HINT.CANDIDATE, id, detail: origin });
+      else unusedSources.push({ hint: HINT.CHECK, id, detail: origin, note: `name mentioned in code: ${mention}` });
+    } else if (calls.every(isInUnusedComponent)) deadCallerSources.push({ hint: HINT.CHECK, id, detail: callers });
+    else codeOnlySources.push({ hint: HINT.INFO, id, detail: callers });
+  }
+  printSection('Content sources: no usage found', unusedSources);
+  printSection('Content sources: found only in unused theme components', deadCallerSources);
+  printSection('Content sources: found only in code (keep, not set in PageBuilder)', codeOnlySources);
+
+  const rows = [...unusedComponents, ...draftOnlyComponents, ...unusedPackages, ...unusedSources, ...deadCallerSources, ...codeOnlySources];
+  const countOf = (hint) => rows.filter((row) => row.hint === hint).length;
   printSummary([
-    { label: 'referenced in PageBuilder but missing in code', count: missing.length, tone: TONE.error },
+    { label: 'referenced in PageBuilder but not found in code', count: missing.length, tone: TONE.error },
     { label: 'of them on live pages or templates', count: missing.filter((row) => row.levels.includes(LEVEL.LIVE)).length, tone: TONE.error },
-    { label: 'unused theme components', count: unusedComponents.length, tone: TONE.remove },
-    { label: 'unused blocks.json packages', count: unusedPackages.length, tone: TONE.remove },
-    { label: 'unused content sources', count: unusedSources.length + deadCallerSources.length, tone: TONE.remove },
-    { label: 'components used only in drafts', count: draftOnlyComponents.length, tone: TONE.review },
+    { label: 'candidate - nothing found anywhere', count: countOf(HINT.CANDIDATE), tone: TONE.candidate },
+    { label: 'check - a trace found: a mention, an import, drafts only', count: countOf(HINT.CHECK), tone: TONE.check },
+    {
+      label: 'info - kept for reference: used only from code, imported, Arc Themes base',
+      count: countOf(HINT.INFO) + importedPackages.length + basePackages.length,
+      tone: TONE.info,
+    },
   ]);
 };
 
