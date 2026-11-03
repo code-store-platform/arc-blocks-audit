@@ -9,7 +9,6 @@ Finds dead code in an Arc XP Fusion theme. It compares the theme's components, c
   - `fusion-data` container with Mongo on `localhost:27017` (PageBuilder data: pages, templates, resolvers, stashed items);
   - `fusion-webpack` container (stock `@wpmedia` blocks are copied from it).
 - `docker` CLI on the PATH.
-- SSH access to the `code-store-platform` GitHub organization. The repo is private, check with `ssh -T git@github.com`.
 
 ## Run
 
@@ -18,13 +17,13 @@ Nothing is added to the project: npx installs the tool into its own cache (`~/.n
 From the theme root (the folder with `blocks.json` and `components/`):
 
 ```sh
-npx -y git+ssh://git@github.com/code-store-platform/arc-blocks-audit.git
+npx -y github:code-store-platform/arc-blocks-audit
 ```
 
 From anywhere else, point it at the theme:
 
 ```sh
-npx -y git+ssh://git@github.com/code-store-platform/arc-blocks-audit.git --project ~/path/to/theme
+npx -y github:code-store-platform/arc-blocks-audit --project ~/path/to/theme
 ```
 
 `-y` skips the "Need to install the following packages" prompt. Everything after the repo URL goes to the tool.
@@ -53,8 +52,8 @@ With npm 9+ npx checks the repo on every run: it resolves the latest commit of t
 To pin or pick a branch, tag or commit, add it after `#`:
 
 ```sh
-npx -y git+ssh://git@github.com/code-store-platform/arc-blocks-audit.git#main
-npx -y git+ssh://git@github.com/code-store-platform/arc-blocks-audit.git#<commit-or-tag>
+npx -y github:code-store-platform/arc-blocks-audit#main
+npx -y github:code-store-platform/arc-blocks-audit#<commit-or-tag>
 ```
 
 If an old version still runs (older npm, broken install), clear the npx cache and run again:
@@ -112,3 +111,7 @@ Then by section:
 - Without Docker (or without the `fusion-webpack` container) stock packages are not read from the container. The tool falls back to `<project>/node_modules/@wpmedia`, which is usually empty, so stock packages show as not installed, and the header warns about it. Pass `--wpmedia` if you have them locally.
 - Imports are found with regular expressions too (`import ... from`, `import()`, `require()`), resolved by relative path, `~/` and wildcard `paths` from `tsconfig.json` or `jsconfig.json`. Other webpack aliases are not read.
 - The snapshot date comes from rendering timestamps in Mongo. If the data has none, the header says the date is unknown.
+
+## License
+
+MIT
